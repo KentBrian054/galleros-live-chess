@@ -1,12 +1,13 @@
 /* Galleros Live Chess — authenticated Gmail edition */
-const PIECES={wp:'♙',wn:'♘',wb:'♗',wr:'♖',wq:'♕',wk:'♔',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};
+// Filled silhouettes keep the white set readable on ivory squares across fonts/browsers.
+const PIECES={wp:'♟',wn:'♞',wb:'♝',wr:'♜',wq:'♛',wk:'♚',bp:'♟',bn:'♞',bb:'♝',br:'♜',bq:'♛',bk:'♚'};
 const FILES=['a','b','c','d','e','f','g','h'];
 const cfg=window.CHESS_CONFIG||{};
 const db=(window.supabase&&cfg.supabaseUrl&&cfg.supabaseKey)?window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey):null;
 
 const $=id=>document.getElementById(id);
 const boardEl=$('board'),statusEl=$('gameStatus'),moveHistoryEl=$('moveHistory'),emptyMovesEl=$('emptyMoves');
-const thinkingEl=$('thinking'),difficultyEl=$('difficulty'),playerColorEl=$('playerColor'),gameIdEl=$('gameId');
+const thinkingEl=$('thinking'),difficultyEl=$('difficulty'),playerColorEl=$('playerColor'),gameIdEl=$('gameId'),puzzlePhaseEl=$('puzzlePhase');
 const turnDotEl=$('turnDot'),opponentNameEl=$('opponentName'),opponentSubEl=$('opponentSub'),youSubEl=$('youSub');
 const toastEl=$('toast'),connectionStatus=$('connectionStatus');
 
@@ -15,7 +16,9 @@ let selected=null,legalTargets=[],lastMove=null,resigned=false,aiBusy=false;
 let mode='computer',playerColor='w',orientation='w';
 let session=null,profile=null;
 let live={code:null,color:null,ply:0,status:null,channel:null,stake:200};
-let puzzles=[],currentPuzzle=null,puzzleIndex=0,puzzleSolutionIndex=0,puzzlePlayerColor='w',puzzleStreak=0;
+let puzzles=[],currentPuzzle=null,puzzleIndex=0,puzzleSolutionIndex=0,puzzlePlayerColor='w',puzzleStreak=0,puzzleRecentIds=[];
+let stockfishWorker=null,stockfishReady=null,stockfishSearch=null;
+const STOCKFISH_URL='./vendor/stockfish/stockfish.js';
 
 function toast(message){toastEl.textContent=message;toastEl.classList.add('show');setTimeout(()=>toastEl.classList.remove('show'),2200)}
 function cleanError(err){
@@ -149,7 +152,7 @@ function renderBoard(){
     const cell=document.createElement('button');cell.type='button';cell.className=`square ${(file+rank)%2===1?'light':'dark'}`;cell.dataset.square=sq;
     if(selected===sq)cell.classList.add('selected');if(lastMove&&(lastMove.from===sq||lastMove.to===sq))cell.classList.add('last-move');
     const legal=legalTargets.find(m=>m.to===sq);if(legal)cell.classList.add(game.get(sq)?'capture-target':'legal-target');
-    const p=game.get(sq);if(p){const span=document.createElement('span');span.className=`piece piece-${p.color} piece-${p.type}`;span.setAttribute('aria-label',`${p.color==='w'?'White':'Black'} ${p.type}`);span.textContent=PIECES[p.color+p.type];cell.appendChild(span)}
+    const p=game.get(sq);if(p){const span=document.createElement('span');span.className=`piece color-${p.color} type-${p.type}`;span.setAttribute('aria-label',`${p.color==='w'?'White':'Black'} ${p.type}`);span.textContent=PIECES[p.color+p.type];cell.appendChild(span)}
     if(idx%8===0){const r=document.createElement('span');r.className='coord rank';r.textContent=sq[1];cell.appendChild(r)}
     if(idx>=56){const f=document.createElement('span');f.className='coord file';f.textContent=sq[0];cell.appendChild(f)}
     cell.addEventListener('click',()=>handleSquareClick(sq));boardEl.appendChild(cell);
@@ -204,11 +207,56 @@ function renderInfo(){
 
 // ---------- Computer ----------
 const value={p:100,n:320,b:330,r:500,q:900,k:20000};
+function ensureStockfish(){
+  if(stockfishWorker)return stockfishReady;
+  stockfishReady=new Promise((resolve,reject)=>{
+    let settled=false;
+    try{
+      stockfishWorker=new Worker(STOCKFISH_URL);
+      stockfishWorker.onmessage=e=>{
+        const line=String(e.data||'');
+        if(line.includes('uciok')&&!settled){settled=true;resolve(stockfishWorker)}
+        if(line.startsWith('bestmove ')&&stockfishSearch){
+          const search=stockfishSearch;stockfishSearch=null;search.resolve(line.split(/\s+/)[1]);
+        }
+      };
+      stockfishWorker.onerror=error=>{
+        if(!settled){settled=true;reject(error)}
+        if(stockfishSearch){const search=stockfishSearch;stockfishSearch=null;search.reject(error)}
+        stockfishWorker=null;stockfishReady=null;
+      };
+      stockfishWorker.postMessage('uci');
+    }catch(error){stockfishWorker=null;stockfishReady=null;reject(error)}
+  });
+  return stockfishReady;
+}
+async function stockfishMove(){
+  const worker=await ensureStockfish();
+  const level=difficultyEl.value;
+  const skill=level==='hard'?18:level==='medium'?10:3;
+  const movetime=level==='hard'?2200:level==='medium'?1100:450;
+  worker.postMessage('setoption name Skill Level value '+skill);
+  worker.postMessage('position fen '+game.fen());
+  return await new Promise((resolve,reject)=>{
+    stockfishSearch={resolve,reject};
+    worker.postMessage(`go movetime ${movetime}`);
+    setTimeout(()=>{if(stockfishSearch){const search=stockfishSearch;stockfishSearch=null;search.reject(new Error('Stockfish timed out'))}},movetime+2500);
+  });
+}
 function evaluateBoard(){let score=0;for(let r=1;r<=8;r++)for(const f of FILES){const p=game.get(`${f}${r}`);if(p)score+=(p.color==='b'?1:-1)*value[p.type]}return score}
 function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function minimax(depth,alpha,beta,maxBlack){if(depth===0||game.game_over())return evaluateBoard();const moves=game.moves({verbose:true});if(maxBlack){let best=-Infinity;for(const m of moves){game.move(m);best=Math.max(best,minimax(depth-1,alpha,beta,false));game.undo();alpha=Math.max(alpha,best);if(beta<=alpha)break}return best}let best=Infinity;for(const m of moves){game.move(m);best=Math.min(best,minimax(depth-1,alpha,beta,true));game.undo();beta=Math.min(beta,best);if(beta<=alpha)break}return best}
 function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=difficultyEl.value;if(level==='easy')return shuffle(moves)[0];const black=playerColor==='w',depth=level==='hard'?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*(level==='medium'?24:6);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
-async function computerTurn(){if(game.game_over()||resigned||mode!=='computer'||game.turn()===playerColor)return;aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();await new Promise(r=>setTimeout(r,difficultyEl.value==='hard'?420:180));const m0=pickComputerMove();if(m0){const m=game.move(m0);lastMove={from:m.from,to:m.to}}aiBusy=false;thinkingEl.classList.add('hidden');renderBoard()}
+async function computerTurn(){
+  if(game.game_over()||resigned||mode!=='computer'||game.turn()===playerColor)return;
+  aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();
+  try{
+    let uci;
+    try{uci=await stockfishMove()}catch(error){console.warn('Stockfish unavailable; using local fallback.',error);uci=null}
+    const m0=uci&&uci!=='(none)'?{from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]||'q'}:pickComputerMove();
+    if(m0){const m=game.move(m0);if(m)lastMove={from:m.from,to:m.to}}
+  }finally{aiBusy=false;thinkingEl.classList.add('hidden');renderBoard()}
+}
 function newComputerGame(){game=new Chess();resigned=false;selected=null;legalTargets=[];lastMove=null;aiBusy=false;playerColor=playerColorEl.value;orientation=playerColor;opponentNameEl.textContent=`Computer · ${difficultyEl.value[0].toUpperCase()+difficultyEl.value.slice(1)}`;opponentSubEl.textContent=playerColor==='w'?'Black':'White';youSubEl.textContent=playerColor==='w'?'White':'Black';gameIdEl.textContent='LOCAL';clearAnalysis();renderBoard();if(playerColor==='b')setTimeout(computerTurn,350)}
 
 // ---------- Live ----------
@@ -260,12 +308,45 @@ async function resignGame(){
 }
 
 // ---------- Puzzles ----------
-async function loadPuzzles(){if(!session)return;const {data,error}=await db.from('chess_puzzles').select('*').order('id');if(error)throw error;puzzles=data||[]}
+const builtInPuzzles=[
+  {id:'opening-italian-development',title:'Italian Development',difficulty:'easy',phase:'opening',fen:'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3',solution:['f1c4'],hint:'Develop the bishop toward the king and fight for the center.',theme:'Development'},
+  {id:'opening-center-break',title:'Open the Center',difficulty:'medium',phase:'opening',fen:'r1bqk2r/pppp1ppp/2n2n2/4p3/2BPP3/5N2/PPP2PPP/RNBQ1RK1 w kq - 3 5',solution:['d4e5'],hint:'Exchange in the center before Black completes development.',theme:'Central break'},
+  {id:'opening-castle',title:'Castle to Safety',difficulty:'easy',phase:'opening',fen:'r1bqk2r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPP2PPP/RNBQ1RK1 w kq - 4 6',solution:['f1e1'],hint:'Improve the rook and keep pressure on the open file.',theme:'King safety'},
+  {id:'middlegame-fork',title:'Knight Fork',difficulty:'medium',phase:'middlegame',fen:'4k3/8/3q4/8/4N3/8/8/4K3 w - - 0 1',solution:['e4f6'],hint:'Find the knight jump that attacks the king and queen.',theme:'Fork'},
+  {id:'middlegame-back-rank',title:'Back Rank Pressure',difficulty:'hard',phase:'middlegame',fen:'3r2k1/5ppp/8/8/8/5Q2/5PPP/3R2K1 w - - 0 1',solution:['f3d3'],hint:'Double your pressure before the final back-rank blow.',theme:'Attack'},
+  {id:'middlegame-queen-finish',title:'Queen Finish',difficulty:'easy',phase:'middlegame',fen:'7k/6pp/5Q2/8/8/8/6PP/6K1 w - - 0 1',solution:['f6d8'],hint:'The queen can finish the attack from the diagonal.',theme:'Mate in 1'},
+  {id:'endgame-rook-mate',title:'Rook on the Back Rank',difficulty:'easy',phase:'endgame',fen:'6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1',solution:['d1d8'],hint:'Use the open file to give check on the eighth rank.',theme:'Mate in 1'},
+  {id:'endgame-promotion',title:'Passed Pawn',difficulty:'medium',phase:'endgame',fen:'8/4P3/8/8/8/8/4k3/4K3 w - - 0 1',solution:['e7e8'],hint:'Advance the passed pawn and promote immediately.',theme:'Promotion'},
+  {id:'endgame-smothered-net',title:'Smothered Net',difficulty:'hard',phase:'endgame',fen:'6rk/5Qpp/7N/8/8/8/6PP/6K1 w - - 0 1',solution:['f7g8'],hint:'The knight blocks the king’s escape squares.',theme:'Mate in 1'}
+];
+function puzzlePhase(puzzle){
+  if(puzzle.phase)return puzzle.phase;
+  const theme=String(puzzle.theme||'').toLowerCase();
+  if(/opening|develop|castle|center/.test(theme))return 'opening';
+  if(/endgame|promotion|pawn|back rank/.test(theme))return 'endgame';
+  return 'middlegame';
+}
+async function loadPuzzles(){
+  if(!session)return;
+  const {data,error}=await db.from('chess_puzzles').select('*').order('id');
+  if(error)throw error;
+  const remote=(data||[]).map(p=>({...p,phase:puzzlePhase(p)}));
+  const remoteThemes=new Set(remote.map(p=>`${p.title}|${p.fen}`));
+  puzzles=[...remote,...builtInPuzzles.filter(p=>!remoteThemes.has(`${p.title}|${p.fen}`))];
+}
 function parseUci(uci){return{from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]||'q'}}
 async function nextPuzzle(){
-  if(!requireAuth())return;if(!puzzles.length)await loadPuzzles();const diff=$('puzzleDifficulty').value;const pool=puzzles.filter(p=>diff==='all'||p.difficulty===diff);if(!pool.length)return toast('No puzzles in this level yet');
-  currentPuzzle=pool[puzzleIndex%pool.length];puzzleIndex++;puzzleSolutionIndex=0;game=new Chess();if(!game.load(currentPuzzle.fen))game=new Chess();puzzlePlayerColor=game.turn();playerColor=puzzlePlayerColor;orientation=puzzlePlayerColor;resigned=false;selected=null;legalTargets=[];lastMove=null;
-  $('puzzleTheme').textContent=`${currentPuzzle.theme} · ${currentPuzzle.difficulty}`;$('puzzleHint').classList.add('hidden');$('puzzleHint').textContent=currentPuzzle.hint;gameIdEl.textContent=`PUZZLE ${currentPuzzle.id}`;opponentNameEl.textContent='Puzzle';opponentSubEl.textContent='Find the best move';youSubEl.textContent=puzzlePlayerColor==='w'?'White to solve':'Black to solve';clearAnalysis('Solve the puzzle first.');renderBoard();
+  if(!requireAuth())return;
+  if(!puzzles.length)await loadPuzzles();
+  const diff=$('puzzleDifficulty').value,phase=puzzlePhaseEl.value;
+  let pool=puzzles.filter(p=>(diff==='all'||p.difficulty===diff)&&(phase==='all'||puzzlePhase(p)===phase));
+  if(!pool.length)return toast('No puzzles in this phase and level yet');
+  let fresh=pool.filter(p=>!puzzleRecentIds.includes(String(p.id)));
+  if(!fresh.length){puzzleRecentIds=[];fresh=pool}
+  currentPuzzle=fresh[Math.floor(Math.random()*fresh.length)];
+  puzzleRecentIds.push(String(currentPuzzle.id));if(puzzleRecentIds.length>Math.max(4,Math.min(12,pool.length-1)))puzzleRecentIds.shift();
+  puzzleIndex++;puzzleSolutionIndex=0;game=new Chess();if(!game.load(currentPuzzle.fen))game=new Chess();puzzlePlayerColor=game.turn();playerColor=puzzlePlayerColor;orientation=puzzlePlayerColor;resigned=false;selected=null;legalTargets=[];lastMove=null;
+  $('puzzleTheme').textContent=`${puzzlePhase(currentPuzzle)} · ${currentPuzzle.theme} · ${currentPuzzle.difficulty}`;$('puzzleHint').classList.add('hidden');$('puzzleHint').textContent=currentPuzzle.hint;gameIdEl.textContent=`PUZZLE ${currentPuzzle.id}`;opponentNameEl.textContent='Puzzle';opponentSubEl.textContent=`${puzzlePhase(currentPuzzle)[0].toUpperCase()+puzzlePhase(currentPuzzle).slice(1)} · Find the best move`;youSubEl.textContent=puzzlePlayerColor==='w'?'White to solve':'Black to solve';clearAnalysis('Solve the puzzle first.');renderBoard();
 }
 async function checkPuzzleMove(move){
   if(!currentPuzzle)return;const expected=currentPuzzle.solution[puzzleSolutionIndex];const uci=`${move.from}${move.to}${move.promotion||''}`;const basic=`${move.from}${move.to}`;
@@ -357,7 +438,7 @@ $('copyRoomBtn').addEventListener('click',async()=>{const code=$('roomCodeText')
 $('flipBtn').addEventListener('click',()=>{orientation=orientation==='w'?'b':'w';renderBoard()});
 $('undoBtn').addEventListener('click',()=>{if(mode!=='computer')return toast(mode==='live'?'Undo is disabled in rated live games.':'Use Try again in puzzles.');if(game.history().length){game.undo();if(game.turn()!==playerColor&&game.history().length)game.undo();lastMove=null;resigned=false;renderBoard()}});
 $('resignBtn').addEventListener('click',resignGame);$('resetBtn').addEventListener('click',()=>{if(mode==='computer')newComputerGame();else if(mode==='puzzle')nextPuzzle();else toast('Create, join, or accept a new live match.')});
-$('hintBtn').addEventListener('click',()=>{if(currentPuzzle)$('puzzleHint').classList.toggle('hidden')});$('nextPuzzleBtn').addEventListener('click',nextPuzzle);$('puzzleDifficulty').addEventListener('change',nextPuzzle);
+$('hintBtn').addEventListener('click',()=>{if(currentPuzzle)$('puzzleHint').classList.toggle('hidden')});$('nextPuzzleBtn').addEventListener('click',nextPuzzle);$('puzzleDifficulty').addEventListener('change',nextPuzzle);puzzlePhaseEl.addEventListener('change',nextPuzzle);
 $('refreshLeaderboardBtn').addEventListener('click',refreshLeaderboard);$('refreshMembersBtn').addEventListener('click',refreshMembers);$('searchMembersBtn').addEventListener('click',refreshMembers);$('memberSearch').addEventListener('keydown',e=>{if(e.key==='Enter')refreshMembers()});$('searchPlayersBtn').addEventListener('click',searchPlayers);$('inviteSearch').addEventListener('keydown',e=>{if(e.key==='Enter')searchPlayers()});$('refreshInvitesBtn').addEventListener('click',refreshInvites);$('refreshTournamentBtn').addEventListener('click',refreshTournament);analysisBtn.addEventListener('click',analyzeCurrentGame);
 document.querySelectorAll('.info-tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.info-tab').forEach(b=>b.classList.toggle('active',b===btn));['moves','leaderboard','members','invites','tournament'].forEach(x=>$(`${x}Panel`).classList.toggle('hidden',btn.dataset.info!==x));if(btn.dataset.info==='leaderboard')refreshLeaderboard();if(btn.dataset.info==='members')refreshMembers();if(btn.dataset.info==='invites')refreshInvites();if(btn.dataset.info==='tournament')refreshTournament()}));
 

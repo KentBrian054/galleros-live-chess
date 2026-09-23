@@ -75,12 +75,16 @@ create table if not exists public.chess_puzzles (
   id bigint generated always as identity primary key,
   title text not null,
   difficulty text not null check (difficulty in ('easy','medium','hard')),
+  phase text not null default 'middlegame' check (phase in ('opening','middlegame','endgame')),
   fen text not null,
   solution text[] not null,
   hint text not null,
   theme text not null,
   created_at timestamptz not null default now()
 );
+alter table public.chess_puzzles add column if not exists phase text not null default 'middlegame';
+alter table public.chess_puzzles drop constraint if exists chess_puzzles_phase_check;
+alter table public.chess_puzzles add constraint chess_puzzles_phase_check check (phase in ('opening','middlegame','endgame'));
 
 alter table public.chess_players enable row level security;
 alter table public.chess_rooms enable row level security;
@@ -285,14 +289,14 @@ grant execute on function public.chess_submit_move(uuid,text,integer,text,text,t
 grant execute on function public.chess_finish_room(uuid,text,text) to anon, authenticated;
 
 -- Sample puzzles (solution is a sequence of UCI-style moves: e2e4).
-insert into public.chess_puzzles(title,difficulty,fen,solution,hint,theme)
+insert into public.chess_puzzles(title,difficulty,phase,fen,solution,hint,theme)
 select * from (values
- ('Back Rank Mate','easy','6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1',array['d1d8'],'Look at the open back rank.','Mate in 1'),
- ('Queen Finish','easy','7k/6pp/5Q2/8/8/8/6PP/6K1 w - - 0 1',array['f6d8'],'Your queen can deliver mate.','Mate in 1'),
- ('Rook Ladder','easy','7k/6pp/8/8/8/8/5RPP/6K1 w - - 0 1',array['f2f8'],'Use the rook on the eighth rank.','Mate in 1'),
- ('Win the Queen','medium','4k3/8/8/3q4/8/2N5/8/4K3 w - - 0 1',array['c3d5'],'A knight fork is available.','Fork'),
- ('Knight Fork','medium','4k3/8/3q4/8/4N3/8/8/4K3 w - - 0 1',array['e4f6'],'Fork king and queen.','Fork'),
- ('Smothered Net','hard','6rk/5Qpp/7N/8/8/8/6PP/6K1 w - - 0 1',array['f7g8'],'The knight blocks escape squares.','Mate in 1')
+ ('Back Rank Mate','easy','endgame','6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1',array['d1d8'],'Look at the open back rank.','Mate in 1'),
+ ('Queen Finish','easy','middlegame','7k/6pp/5Q2/8/8/8/6PP/6K1 w - - 0 1',array['f6d8'],'Your queen can deliver mate.','Mate in 1'),
+ ('Rook Ladder','easy','endgame','7k/6pp/8/8/8/8/5RPP/6K1 w - - 0 1',array['f2f8'],'Use the rook on the eighth rank.','Mate in 1'),
+ ('Win the Queen','medium','middlegame','4k3/8/8/3q4/8/2N5/8/4K3 w - - 0 1',array['c3d5'],'A knight fork is available.','Fork'),
+ ('Knight Fork','medium','middlegame','4k3/8/3q4/8/4N3/8/8/4K3 w - - 0 1',array['e4f6'],'Fork king and queen.','Fork'),
+ ('Smothered Net','hard','endgame','6rk/5Qpp/7N/8/8/8/6PP/6K1 w - - 0 1',array['f7g8'],'The knight blocks escape squares.','Mate in 1')
 ) as v(title,difficulty,fen,solution,hint,theme)
 where not exists (select 1 from public.chess_puzzles);
 

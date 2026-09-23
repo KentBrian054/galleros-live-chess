@@ -17,6 +17,8 @@ Features included:
 5. Never expose a service_role key in frontend code.
 
 - Game Analysis: Best / Good / Inaccuracy / Mistake / Blunder labels, plus a suggested better move for errors.
+- Computer games use a bundled Stockfish 17.1 lite single-thread engine in `vendor/stockfish/`, with a local move-selection fallback if the engine cannot initialize.
+- Puzzles are grouped into opening, middlegame, and endgame phases, with phase and difficulty filters plus recent-puzzle avoidance.
 
 - Members directory with total verified-member count, search, website rank, rating, games, and W-D-L.
 
