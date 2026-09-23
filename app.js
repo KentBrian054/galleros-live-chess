@@ -17,7 +17,7 @@ let mode='computer',playerColor='w',orientation='w';
 let session=null,profile=null;
 let live={code:null,color:null,ply:0,status:null,channel:null,stake:200};
 let puzzles=[],currentPuzzle=null,puzzleIndex=0,puzzleSolutionIndex=0,puzzlePlayerColor='w',puzzleStreak=0,puzzleRecentIds=[];
-let stockfishWorker=null,stockfishReady=null,stockfishSearch=null;
+let stockfishWorker=null,stockfishReady=null,stockfishSearch=null,stockfishReadyCheck=null;
 const STOCKFISH_URL='./vendor/stockfish/stockfish.js';
 
 function toast(message){toastEl.textContent=message;toastEl.classList.add('show');setTimeout(()=>toastEl.classList.remove('show'),2200)}
@@ -216,8 +216,9 @@ function ensureStockfish(){
       stockfishWorker.onmessage=e=>{
         const line=String(e.data||'');
         if(line.includes('uciok')&&!settled){settled=true;resolve(stockfishWorker)}
+        if(line.includes('readyok')&&stockfishReadyCheck){const check=stockfishReadyCheck;stockfishReadyCheck=null;check.resolve()}
         if(line.startsWith('bestmove ')&&stockfishSearch){
-          const search=stockfishSearch;stockfishSearch=null;search.resolve(line.split(/\s+/)[1]);
+          const search=stockfishSearch;stockfishSearch=null;clearTimeout(search.timer);search.resolve(line.split(/\s+/)[1]);
         }
       };
       stockfishWorker.onerror=error=>{
@@ -234,13 +235,21 @@ async function stockfishMove(){
   const worker=await ensureStockfish();
   const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));
   const skill=Math.round((level-1)*20/9);
-  const movetime=Math.round(250+Math.pow(level/10,2.5)*14750);
+  const movetime=Math.round(500+Math.pow(level/10,2.5)*39500);
+  await new Promise((resolve,reject)=>{
+    stockfishReadyCheck={resolve,reject};
+    worker.postMessage('isready');
+    setTimeout(()=>{if(stockfishReadyCheck){stockfishReadyCheck=null;reject(new Error('Stockfish did not become ready'))}},5000);
+  });
+  worker.postMessage('setoption name UCI_LimitStrength value false');
   worker.postMessage('setoption name Skill Level value '+skill);
+  worker.postMessage('setoption name Threads value 1');
+  worker.postMessage('setoption name Hash value 128');
   worker.postMessage('position fen '+game.fen());
   return await new Promise((resolve,reject)=>{
-    stockfishSearch={resolve,reject};
+    const timer=setTimeout(()=>{if(stockfishSearch){const search=stockfishSearch;stockfishSearch=null;search.reject(new Error('Stockfish timed out'))}},movetime+10000);
+    stockfishSearch={resolve,reject,timer};
     worker.postMessage(`go movetime ${movetime}`);
-    setTimeout(()=>{if(stockfishSearch){const search=stockfishSearch;stockfishSearch=null;search.reject(new Error('Stockfish timed out'))}},movetime+2500);
   });
 }
 function evaluateBoard(){let score=0;for(let r=1;r<=8;r++)for(const f of FILES){const p=game.get(`${f}${r}`);if(p)score+=(p.color==='b'?1:-1)*value[p.type]}return score}
@@ -252,7 +261,11 @@ async function computerTurn(){
   aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();
   try{
     let uci;
-    try{uci=await stockfishMove()}catch(error){console.warn('Stockfish unavailable; using local fallback.',error);uci=null}
+    try{uci=await stockfishMove()}catch(error){
+      console.warn('Stockfish unavailable.',error);
+      if(Number(difficultyEl.value)>=9){toast('Stockfish is still calculating or unavailable. No fallback move was made.');return}
+      uci=null;
+    }
     const m0=uci&&uci!=='(none)'?{from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]||'q'}:pickComputerMove();
     if(m0){const m=game.move(m0);if(m)lastMove={from:m.from,to:m.to}}
   }finally{aiBusy=false;thinkingEl.classList.add('hidden');renderBoard()}
