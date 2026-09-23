@@ -18,6 +18,8 @@ let session=null,profile=null;
 let live={code:null,color:null,ply:0,status:null,channel:null,stake:200};
 let puzzles=[],currentPuzzle=null,puzzleIndex=0,puzzleSolutionIndex=0,puzzlePlayerColor='w',puzzleStreak=0,puzzleRecentIds=[];
 let stockfishWorker=null,stockfishReady=null,stockfishSearch=null,stockfishReadyCheck=null;
+let gameGeneration=0;
+let puzzleAdvanceTimer=null;
 const STOCKFISH_URL='./vendor/stockfish/stockfish.js';
 
 function toast(message){toastEl.textContent=message;toastEl.classList.add('show');setTimeout(()=>toastEl.classList.remove('show'),2200)}
@@ -244,12 +246,23 @@ async function stockfishMove(){
   worker.postMessage('setoption name UCI_LimitStrength value false');
   worker.postMessage('setoption name Skill Level value '+skill);
   worker.postMessage('setoption name Threads value 1');
-  worker.postMessage('setoption name Hash value 128');
+  worker.postMessage('setoption name Hash value 32');
+  await new Promise((resolve,reject)=>{
+    stockfishReadyCheck={resolve,reject};
+    worker.postMessage('isready');
+    setTimeout(()=>{if(stockfishReadyCheck){stockfishReadyCheck=null;reject(new Error('Stockfish did not apply its settings'))}},5000);
+  });
   worker.postMessage('position fen '+game.fen());
+  const maxSearchTime=Math.min(15000,Math.round(700+Math.pow(level/10,2.2)*14300));
   return await new Promise((resolve,reject)=>{
-    const timer=setTimeout(()=>{if(stockfishSearch){const search=stockfishSearch;stockfishSearch=null;search.reject(new Error('Stockfish timed out'))}},movetime+10000);
+    const timer=setTimeout(()=>{
+      if(stockfishSearch){
+        worker.postMessage('stop');
+        const search=stockfishSearch;stockfishSearch=null;search.reject(new Error('Stockfish timed out'));
+      }
+    },maxSearchTime+5000);
     stockfishSearch={resolve,reject,timer};
-    worker.postMessage(`go movetime ${movetime}`);
+    worker.postMessage(`go movetime ${maxSearchTime}`);
   });
 }
 function evaluateBoard(){let score=0;for(let r=1;r<=8;r++)for(const f of FILES){const p=game.get(`${f}${r}`);if(p)score+=(p.color==='b'?1:-1)*value[p.type]}return score}
@@ -258,6 +271,7 @@ function minimax(depth,alpha,beta,maxBlack){if(depth===0||game.game_over())retur
 function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));if(level===1)return shuffle(moves)[0];const black=playerColor==='w',depth=level>=9?3:level>=5?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*Math.max(1,30-level*3);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
 async function computerTurn(){
   if(game.game_over()||resigned||mode!=='computer'||game.turn()===playerColor)return;
+  const generation=gameGeneration;
   aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();
   try{
     let uci;
@@ -266,11 +280,19 @@ async function computerTurn(){
       if(Number(difficultyEl.value)>=9){toast('Stockfish is still calculating or unavailable. No fallback move was made.');return}
       uci=null;
     }
+    if(generation!==gameGeneration||mode!=='computer'||game.game_over()||game.turn()===playerColor)return;
     const m0=uci&&uci!=='(none)'?{from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]||'q'}:pickComputerMove();
     if(m0){const m=game.move(m0);if(m)lastMove={from:m.from,to:m.to}}
   }finally{aiBusy=false;thinkingEl.classList.add('hidden');renderBoard()}
 }
-function newComputerGame(){game=new Chess();resigned=false;selected=null;legalTargets=[];lastMove=null;aiBusy=false;playerColor=playerColorEl.value;orientation=playerColor;opponentNameEl.textContent=`Computer · Level ${difficultyEl.value}`;opponentSubEl.textContent=playerColor==='w'?'Black':'White';youSubEl.textContent=playerColor==='w'?'White':'Black';gameIdEl.textContent='LOCAL';clearAnalysis();renderBoard();if(playerColor==='b')setTimeout(computerTurn,350)}
+function cancelComputerSearch(){
+  gameGeneration++;
+  if(stockfishSearch&&stockfishWorker){
+    stockfishWorker.postMessage('stop');
+    const search=stockfishSearch;stockfishSearch=null;clearTimeout(search.timer);search.reject(new Error('Computer game changed'));
+  }
+}
+function newComputerGame(){cancelComputerSearch();game=new Chess();resigned=false;selected=null;legalTargets=[];aiBusy=false;playerColor=playerColorEl.value;orientation=playerColor;opponentNameEl.textContent=`Computer · Level ${difficultyEl.value}`;opponentSubEl.textContent=playerColor==='w'?'Black':'White';youSubEl.textContent=playerColor==='w'?'White':'Black';gameIdEl.textContent='LOCAL';clearAnalysis();renderBoard();if(playerColor==='b')setTimeout(computerTurn,350)}
 
 // ---------- Live ----------
 function generateRoomCode(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<6;i++)s+=chars[Math.floor(Math.random()*chars.length)];return s}
@@ -282,6 +304,8 @@ function subscribeRoom(code){
   }).subscribe();
 }
 async function applyLivePayload(row,withColor=true){
+  if(mode!=='live'||(live.code&&row.room_code&&row.room_code!==live.code))return;
+  if(live.code===row.room_code&&Number(row.ply||0)<live.ply)return;
   if(withColor&&row.color)live.color=row.color;live.code=row.room_code||live.code;live.ply=Number(row.ply||0);live.status=row.status||live.status;
   const g=new Chess();let loaded=false;if(row.pgn){try{loaded=g.load_pgn(row.pgn)||false}catch{}}
   if(!loaded&&row.fen&&row.fen!=='start'){try{loaded=g.load(row.fen)}catch{}}
@@ -364,6 +388,7 @@ function parseUci(uci){
 }
 async function nextPuzzle(){
   if(!requireAuth())return;
+  clearTimeout(puzzleAdvanceTimer);puzzleAdvanceTimer=null;
   if(!puzzles.length)await loadPuzzles();
   const diff=$('puzzleDifficulty').value,phase=puzzlePhaseEl.value;
   let pool=puzzles.filter(p=>(diff==='all'||p.difficulty===diff)&&(phase==='all'||puzzlePhase(p)===phase));
@@ -382,9 +407,23 @@ async function checkPuzzleMove(move){
   const accepted=expectedClean===moveClean||expectedClean===basic;
   if(!expected||!accepted){game.undo();lastMove=null;selected=null;legalTargets=[];renderBoard();toast('Try again');return}
   puzzleSolutionIndex++;
-  if(puzzleSolutionIndex>=currentPuzzle.solution.length){puzzleStreak++;$('puzzleStreak').textContent=puzzleStreak;toast('Puzzle solved ✓');setTimeout(nextPuzzle,700);return}
+  if(puzzleSolutionIndex>=currentPuzzle.solution.length){puzzleStreak++;$('puzzleStreak').textContent=puzzleStreak;toast('Puzzle solved ✓');scheduleNextPuzzle();return}
   // Auto-play opponent reply when the solution line contains it.
-  if(game.turn()!==puzzlePlayerColor){const reply=parseUci(currentPuzzle.solution[puzzleSolutionIndex]);const m=game.move(reply);if(m){lastMove={from:m.from,to:m.to};puzzleSolutionIndex++;renderBoard()}if(puzzleSolutionIndex>=currentPuzzle.solution.length){puzzleStreak++;$('puzzleStreak').textContent=puzzleStreak;toast('Puzzle solved ✓');setTimeout(nextPuzzle,700)}}
+  if(game.turn()!==puzzlePlayerColor){
+    const reply=parseUci(currentPuzzle.solution[puzzleSolutionIndex]);
+    const m=game.move(reply);
+    if(!m){toast('Puzzle line is invalid. Loading another puzzle.');scheduleNextPuzzle();return}
+    lastMove={from:m.from,to:m.to};puzzleSolutionIndex++;renderBoard();
+    if(puzzleSolutionIndex>=currentPuzzle.solution.length){puzzleStreak++;$('puzzleStreak').textContent=puzzleStreak;toast('Puzzle solved ✓');scheduleNextPuzzle()}
+  }
+}
+function scheduleNextPuzzle(){
+  clearTimeout(puzzleAdvanceTimer);
+  const puzzleId=currentPuzzle?.id;
+  puzzleAdvanceTimer=setTimeout(()=>{
+    puzzleAdvanceTimer=null;
+    if(mode==='puzzle'&&currentPuzzle?.id===puzzleId)nextPuzzle().catch(e=>toast(cleanError(e)));
+  },700);
 }
 
 // ---------- Leaderboard / invites / tournament ----------
@@ -436,6 +475,9 @@ function escapeHtml(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','
 // ---------- Modes ----------
 function switchMode(next,reset=true){
   mode=next;['computer','live','puzzle'].forEach(x=>{$(`${x}ModeBtn`).classList.toggle('active',next===x);$(`${x}Controls`).classList.toggle('hidden',next!==x)});
+  clearTimeout(puzzleAdvanceTimer);puzzleAdvanceTimer=null;
+  if(next!=='puzzle')currentPuzzle=null;
+  cancelComputerSearch();
   stopLiveSubscription();
   if(next==='computer'){if(reset)newComputerGame()}
   else if(next==='live'){if(reset){game=new Chess();resigned=false;lastMove=null;selected=null;legalTargets=[];live={code:null,color:'w',ply:0,status:null,channel:null,stake:200};orientation='w';opponentNameEl.textContent='Waiting for opponent';opponentSubEl.textContent='Live room';youSubEl.textContent='White';gameIdEl.textContent='LIVE';$('roomBox').classList.add('hidden');$('liveHelper').textContent='Create a room, join by code, or accept an invite.';clearAnalysis();renderBoard()}}
