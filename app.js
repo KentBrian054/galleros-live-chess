@@ -233,8 +233,8 @@ function ensureStockfish(){
 async function stockfishMove(){
   const worker=await ensureStockfish();
   const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));
-  const skill=Math.round((level-1)*9/9);
-  const movetime=Math.round(300+Math.pow(level/10,2.25)*5700);
+  const skill=Math.round((level-1)*20/9);
+  const movetime=Math.round(250+Math.pow(level/10,2.5)*14750);
   worker.postMessage('setoption name Skill Level value '+skill);
   worker.postMessage('position fen '+game.fen());
   return await new Promise((resolve,reject)=>{
