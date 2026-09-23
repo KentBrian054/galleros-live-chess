@@ -1,7 +1,7 @@
 # Galleros Live Chess
 
 Features included:
-- Play vs Computer: 10 Stockfish levels, from Beginner (Level 1) to Expert (Level 10)
+- Play vs Computer: 10 balanced Stockfish levels, from Beginner (Level 1), Advanced (Level 5), to Grandmaster / Super Hard (Level 10)
 - White or Black side
 - Legal chess moves, check/checkmate/draw detection
 - Move history

@@ -233,8 +233,8 @@ function ensureStockfish(){
 async function stockfishMove(){
   const worker=await ensureStockfish();
   const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));
-  const skill=level-1;
-  const movetime=250+level*220;
+  const skill=Math.round((level-1)*9/9);
+  const movetime=Math.round(300+Math.pow(level/10,2.25)*5700);
   worker.postMessage('setoption name Skill Level value '+skill);
   worker.postMessage('position fen '+game.fen());
   return await new Promise((resolve,reject)=>{
@@ -246,7 +246,7 @@ async function stockfishMove(){
 function evaluateBoard(){let score=0;for(let r=1;r<=8;r++)for(const f of FILES){const p=game.get(`${f}${r}`);if(p)score+=(p.color==='b'?1:-1)*value[p.type]}return score}
 function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function minimax(depth,alpha,beta,maxBlack){if(depth===0||game.game_over())return evaluateBoard();const moves=game.moves({verbose:true});if(maxBlack){let best=-Infinity;for(const m of moves){game.move(m);best=Math.max(best,minimax(depth-1,alpha,beta,false));game.undo();alpha=Math.max(alpha,best);if(beta<=alpha)break}return best}let best=Infinity;for(const m of moves){game.move(m);best=Math.min(best,minimax(depth-1,alpha,beta,true));game.undo();beta=Math.min(beta,best);if(beta<=alpha)break}return best}
-function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));if(level<=2)return shuffle(moves)[0];const black=playerColor==='w',depth=level>=8?3:level>=5?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*Math.max(2,28-level*2);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
+function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));if(level===1)return shuffle(moves)[0];const black=playerColor==='w',depth=level>=9?3:level>=5?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*Math.max(1,30-level*3);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
 async function computerTurn(){
   if(game.game_over()||resigned||mode!=='computer'||game.turn()===playerColor)return;
   aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();
