@@ -151,10 +151,10 @@ function renderBoard(){
   boardEl.innerHTML='';boardEl.classList.toggle('flipped',orientation==='b');const order=squareOrder();
   order.forEach((sq,idx)=>{
     const file=sq.charCodeAt(0)-97,rank=Number(sq[1]);
-    const cell=document.createElement('button');cell.type='button';cell.className=`square ${(file+rank)%2===1?'light':'dark'}`;cell.dataset.square=sq;
+    const cell=document.createElement('button');cell.type='button';cell.className=`square ${(file+rank)%2===1?'light':'dark'}`;cell.dataset.square=sq;cell.setAttribute('aria-label',sq);
     if(selected===sq)cell.classList.add('selected');if(lastMove&&(lastMove.from===sq||lastMove.to===sq))cell.classList.add('last-move');
     const legal=legalTargets.find(m=>m.to===sq);if(legal)cell.classList.add(game.get(sq)?'capture-target':'legal-target');
-    const p=game.get(sq);if(p){const span=document.createElement('span');span.className=`piece color-${p.color} type-${p.type}`;span.setAttribute('aria-label',`${p.color==='w'?'White':'Black'} ${p.type} on ${sq}`);span.textContent=PIECES[p.color+p.type];cell.appendChild(span)}
+    const p=game.get(sq);if(p){cell.setAttribute('aria-label',`${p.color==='w'?'White':'Black'} ${p.type} on ${sq}`);const span=document.createElement('span');span.className=`piece color-${p.color} type-${p.type}`;span.setAttribute('aria-label',`${p.color==='w'?'White':'Black'} ${p.type} on ${sq}`);span.textContent=PIECES[p.color+p.type];cell.appendChild(span)}
     if((orientation==='w'&&idx%8===0)||(orientation==='b'&&idx%8===7)){const r=document.createElement('span');r.className='coord rank';r.textContent=sq[1];cell.appendChild(r)}
     if((orientation==='w'&&idx>=56)||(orientation==='b'&&idx<8)){const f=document.createElement('span');f.className='coord file';f.textContent=sq[0];cell.appendChild(f)}
     cell.addEventListener('click',()=>handleSquareClick(sq));boardEl.appendChild(cell);
