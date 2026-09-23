@@ -232,9 +232,9 @@ function ensureStockfish(){
 }
 async function stockfishMove(){
   const worker=await ensureStockfish();
-  const level=difficultyEl.value;
-  const skill=level==='hard'?18:level==='medium'?10:3;
-  const movetime=level==='hard'?2200:level==='medium'?1100:450;
+  const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));
+  const skill=level-1;
+  const movetime=250+level*220;
   worker.postMessage('setoption name Skill Level value '+skill);
   worker.postMessage('position fen '+game.fen());
   return await new Promise((resolve,reject)=>{
@@ -246,7 +246,7 @@ async function stockfishMove(){
 function evaluateBoard(){let score=0;for(let r=1;r<=8;r++)for(const f of FILES){const p=game.get(`${f}${r}`);if(p)score+=(p.color==='b'?1:-1)*value[p.type]}return score}
 function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function minimax(depth,alpha,beta,maxBlack){if(depth===0||game.game_over())return evaluateBoard();const moves=game.moves({verbose:true});if(maxBlack){let best=-Infinity;for(const m of moves){game.move(m);best=Math.max(best,minimax(depth-1,alpha,beta,false));game.undo();alpha=Math.max(alpha,best);if(beta<=alpha)break}return best}let best=Infinity;for(const m of moves){game.move(m);best=Math.min(best,minimax(depth-1,alpha,beta,true));game.undo();beta=Math.min(beta,best);if(beta<=alpha)break}return best}
-function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=difficultyEl.value;if(level==='easy')return shuffle(moves)[0];const black=playerColor==='w',depth=level==='hard'?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*(level==='medium'?24:6);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
+function pickComputerMove(){let moves=game.moves({verbose:true});if(!moves.length)return null;const level=Math.max(1,Math.min(10,Number(difficultyEl.value)||5));if(level<=2)return shuffle(moves)[0];const black=playerColor==='w',depth=level>=8?3:level>=5?2:1;let best=null,bestScore=black?-Infinity:Infinity;moves=shuffle(moves);for(const m of moves){game.move(m);let score=minimax(depth-1,-Infinity,Infinity,!black);game.undo();if(m.captured)score+=(black?1:-1)*value[m.captured]*.2;score+=(Math.random()-.5)*Math.max(2,28-level*2);if((black&&score>bestScore)||(!black&&score<bestScore)){bestScore=score;best=m}}return best||moves[0]}
 async function computerTurn(){
   if(game.game_over()||resigned||mode!=='computer'||game.turn()===playerColor)return;
   aiBusy=true;thinkingEl.classList.remove('hidden');renderInfo();
@@ -257,7 +257,7 @@ async function computerTurn(){
     if(m0){const m=game.move(m0);if(m)lastMove={from:m.from,to:m.to}}
   }finally{aiBusy=false;thinkingEl.classList.add('hidden');renderBoard()}
 }
-function newComputerGame(){game=new Chess();resigned=false;selected=null;legalTargets=[];lastMove=null;aiBusy=false;playerColor=playerColorEl.value;orientation=playerColor;opponentNameEl.textContent=`Computer · ${difficultyEl.value[0].toUpperCase()+difficultyEl.value.slice(1)}`;opponentSubEl.textContent=playerColor==='w'?'Black':'White';youSubEl.textContent=playerColor==='w'?'White':'Black';gameIdEl.textContent='LOCAL';clearAnalysis();renderBoard();if(playerColor==='b')setTimeout(computerTurn,350)}
+function newComputerGame(){game=new Chess();resigned=false;selected=null;legalTargets=[];lastMove=null;aiBusy=false;playerColor=playerColorEl.value;orientation=playerColor;opponentNameEl.textContent=`Computer · Level ${difficultyEl.value}`;opponentSubEl.textContent=playerColor==='w'?'Black':'White';youSubEl.textContent=playerColor==='w'?'White':'Black';gameIdEl.textContent='LOCAL';clearAnalysis();renderBoard();if(playerColor==='b')setTimeout(computerTurn,350)}
 
 // ---------- Live ----------
 function generateRoomCode(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<6;i++)s+=chars[Math.floor(Math.random()*chars.length)];return s}
@@ -298,7 +298,15 @@ async function submitLiveMove(move,beforeFen,beforePgn){
     if(rows?.length){live.ply=rows[0].ply;live.status=rows[0].status}
     if(game.in_checkmate()){await rpc('chess_auth_finish_room',{p_room_code:live.code,p_result:move.color==='w'?'white_won':'black_won'});await refreshLiveRoom();await ensureProfile();await refreshLeaderboard()}
     else if(game.in_draw()){await rpc('chess_auth_finish_room',{p_room_code:live.code,p_result:'draw'});await refreshLiveRoom();await ensureProfile();await refreshLeaderboard()}
-  }catch(e){const restore=new Chess();if(beforePgn){try{restore.load_pgn(beforePgn)}catch{restore.load(beforeFen)}}else restore.load(beforeFen);game=restore;toast(`Move not saved: ${cleanError(e)}`);await refreshLiveRoom();renderBoard()}
+  }catch(e){
+    const restore=new Chess();
+    let restored=false;
+    if(beforePgn){try{restored=restore.load_pgn(beforePgn)||false}catch{restored=false}}
+    if(!restored){try{restored=restore.load(beforeFen)||false}catch{restored=false}}
+    if(!restored){toast('Move not saved and the previous position could not be restored. Refresh the room.');await refreshLiveRoom();return}
+    game=restore;selected=null;legalTargets=[];lastMove=null;
+    toast(`Move not saved: ${cleanError(e)}`);await refreshLiveRoom();renderBoard()
+  }
 }
 async function resignGame(){
   if(game.game_over())return;
@@ -334,7 +342,13 @@ async function loadPuzzles(){
   const remoteThemes=new Set(remote.map(p=>`${p.title}|${p.fen}`));
   puzzles=[...remote,...builtInPuzzles.filter(p=>!remoteThemes.has(`${p.title}|${p.fen}`))];
 }
-function parseUci(uci){return{from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]||'q'}}
+function normalizeUci(uci){
+  return String(uci||'').trim().toLowerCase().replace(/[^a-h1-8qrbn]/g,'');
+}
+function parseUci(uci){
+  const clean=normalizeUci(uci);
+  return{from:clean.slice(0,2),to:clean.slice(2,4),promotion:clean[4]||'q'};
+}
 async function nextPuzzle(){
   if(!requireAuth())return;
   if(!puzzles.length)await loadPuzzles();
@@ -350,7 +364,10 @@ async function nextPuzzle(){
 }
 async function checkPuzzleMove(move){
   if(!currentPuzzle)return;const expected=currentPuzzle.solution[puzzleSolutionIndex];const uci=`${move.from}${move.to}${move.promotion||''}`;const basic=`${move.from}${move.to}`;
-  if(!expected||(uci!==expected&&basic!==expected)){game.undo();lastMove=null;renderBoard();toast('Try again');return}
+  const expectedClean=normalizeUci(expected);
+  const moveClean=normalizeUci(uci);
+  const accepted=expectedClean===moveClean||expectedClean===basic;
+  if(!expected||!accepted){game.undo();lastMove=null;selected=null;legalTargets=[];renderBoard();toast('Try again');return}
   puzzleSolutionIndex++;
   if(puzzleSolutionIndex>=currentPuzzle.solution.length){puzzleStreak++;$('puzzleStreak').textContent=puzzleStreak;toast('Puzzle solved ✓');setTimeout(nextPuzzle,700);return}
   // Auto-play opponent reply when the solution line contains it.
@@ -432,7 +449,7 @@ async function analyzeCurrentGame(){
 $('googleLoginBtn').addEventListener('click',googleLogin);$('loginBtn').addEventListener('click',login);$('signupBtn').addEventListener('click',signUp);$('logoutBtn').addEventListener('click',logout);
 $('authPassword').addEventListener('keydown',e=>{if(e.key==='Enter')login()});
 $('computerModeBtn').addEventListener('click',()=>switchMode('computer'));$('liveModeBtn').addEventListener('click',()=>{if(requireAuth())switchMode('live')});$('puzzleModeBtn').addEventListener('click',()=>{if(requireAuth())switchMode('puzzle')});
-$('newComputerGame').addEventListener('click',newComputerGame);difficultyEl.addEventListener('change',()=>{opponentNameEl.textContent=`Computer · ${difficultyEl.value[0].toUpperCase()+difficultyEl.value.slice(1)}`});
+$('newComputerGame').addEventListener('click',newComputerGame);difficultyEl.addEventListener('change',()=>{opponentNameEl.textContent=`Computer · Level ${difficultyEl.value}`});
 $('createRoomBtn').addEventListener('click',createRoom);$('joinRoomBtn').addEventListener('click',()=>joinRoom());$('roomCodeInput').addEventListener('keydown',e=>{if(e.key==='Enter')joinRoom()});
 $('copyRoomBtn').addEventListener('click',async()=>{const code=$('roomCodeText').textContent;try{await navigator.clipboard.writeText(code);toast('Room code copied')}catch{toast(code)}});
 $('flipBtn').addEventListener('click',()=>{orientation=orientation==='w'?'b':'w';renderBoard()});

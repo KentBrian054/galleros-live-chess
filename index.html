@@ -53,11 +53,18 @@
         </div>
 
         <div id="computerControls" class="section-block">
-          <label class="label" for="difficulty">Computer difficulty</label>
+          <label class="label" for="difficulty">Computer level</label>
           <select id="difficulty">
-            <option value="easy">Easy</option>
-            <option value="medium" selected>Medium</option>
-            <option value="hard">Hard</option>
+            <option value="1">Level 1 · Beginner</option>
+            <option value="2">Level 2</option>
+            <option value="3">Level 3</option>
+            <option value="4">Level 4</option>
+            <option value="5" selected>Level 5 · Balanced</option>
+            <option value="6">Level 6</option>
+            <option value="7">Level 7</option>
+            <option value="8">Level 8</option>
+            <option value="9">Level 9</option>
+            <option value="10">Level 10 · Expert</option>
           </select>
 
           <label class="label" for="playerColor">Your color</label>
@@ -135,7 +142,7 @@
         <div class="player-card opponent">
           <div class="avatar">♚</div>
           <div>
-            <div class="player-name" id="opponentName">Computer · Medium</div>
+            <div class="player-name" id="opponentName">Computer · Level 5</div>
             <div class="player-sub" id="opponentSub">Black</div>
           </div>
           <div class="thinking hidden" id="thinking">Thinking…</div>
